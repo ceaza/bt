@@ -118,7 +118,7 @@ class Node(object):
         # set default value for now
         self.now = 0
         # make sure root has stale flag
-        # used to avoid unncessary update
+        # used to avoid unnecessary update
         # sometimes we change values in the tree and we know that we will need
         # to update if another node tries to access a given value (say weight).
         # This avoid calling the update until it is actually needed.
@@ -137,7 +137,7 @@ class Node(object):
 
     def use_integer_positions(self, integer_positions):
         """
-        Set indicator to use (or not) integer positions for give strategy or
+        Set indicator to use (or not) integer positions for a given strategy or
         security.
 
         By default all positions in number of stocks should be integer.
@@ -271,16 +271,19 @@ class StrategyBase(Node):
             updating
         * prices (TimeSeries): Prices of the Strategy - basically an index that
             reflects the value of the strategy over time.
+        * outlays (DataFrame): Outlays for each SecurityBase child
         * price (float): last price
         * value (float): last value
         * weight (float): weight in parent
         * full_name (str): Name including parents' names
         * members (list): Current Strategy + strategy's children
+        * securities (list): List of strategy children that are of type
+            SecurityBase
         * commission_fn (fn(quantity, price)): A function used to determine the
-            commission (transaction fee) amount. Could be used to model slippage
-            (implementation shortfall). Note that often fees are symmetric for
-            buy and sell and absolute value of quantity should be used for
-            calculation.
+            commission (transaction fee) amount. Could be used to model
+            slippage (implementation shortfall). Note that often fees are
+            symmetric for buy and sell and absolute value of quantity should
+            be used for calculation.
         * capital (float): Capital amount in Strategy - cash
         * universe (DataFrame): Data universe available at the current time.
             Universe contains the data passed in when creating a Backtest. Use
@@ -332,7 +335,7 @@ class StrategyBase(Node):
         """
         if self.root.stale:
             self.root.update(self.now, None)
-        return self._prices.ix[:self.now]
+        return self._prices.loc[:self.now]
 
     @property
     def values(self):
@@ -341,7 +344,7 @@ class StrategyBase(Node):
         """
         if self.root.stale:
             self.root.update(self.now, None)
-        return self._values.ix[:self.now]
+        return self._values.loc[:self.now]
 
     @property
     def capital(self):
@@ -381,8 +384,22 @@ class StrategyBase(Node):
             return self._funiverse
         else:
             self._last_chk = self.now
-            self._funiverse = self._universe.ix[:self.now]
+            self._funiverse = self._universe.loc[:self.now]
             return self._funiverse
+
+    @property
+    def securities(self):
+        """
+        Returns a list of children that are of type SecurityBase
+        """
+        return [x for x in self.members if isinstance(x, SecurityBase)]
+
+    @property
+    def outlays(self):
+        """
+        Returns a DataFrame of outlays for each child SecurityBase
+        """
+        return pd.DataFrame({x.name: x.outlays for x in self.securities})
 
     @property
     def positions(self):
@@ -577,9 +594,12 @@ class StrategyBase(Node):
         Args:
             * amount (float): Amount to adjust by.
             * update (bool): Force update?
-            * flow (bool): Is this adjustment a flow? Basically a flow will
-                have an impact on the price index. Examples of flows are
-                commissions.
+            * flow (bool): Is this adjustment a flow? A flow will not have an
+                impact on the performance (price index). Example of flows are
+                simply capital injections (say a monthly contribution to a
+                portfolio). This should not be reflected in the returns. A
+                non-flow (flow=False) does impact performance. A good example
+                of this is a commission, or a dividend.
 
         """
         # adjust capital
@@ -713,7 +733,9 @@ class StrategyBase(Node):
         # flatten if children not None
         if c.children is not None and len(c.children) != 0:
             c.flatten()
-        c.allocate(-c.value)
+
+        if c.value != 0. and not np.isnan(c.value):
+            c.allocate(-c.value)
 
     def flatten(self):
         """
@@ -747,7 +769,7 @@ class StrategyBase(Node):
 
     @cy.locals(q=cy.double, p=cy.double)
     def _dflt_comm_fn(self, q, p):
-        return max(1, abs(q) * 0.01)
+        return 0.
 
 
 class SecurityBase(Node):
@@ -771,6 +793,10 @@ class SecurityBase(Node):
             updating
         * prices (TimeSeries): Security prices.
         * price (float): last price
+        * outlays (TimeSeries): Series of outlays. Positive outlays mean
+            capital was allocated to security and security consumed that
+            amount.  Negative outlays are the opposite. This can be useful for
+            calculating turnover at the strategy level.
         * value (float): last value - basically position * price * multiplier
         * weight (float): weight in parent
         * full_name (str): Name including parents' names
@@ -784,6 +810,7 @@ class SecurityBase(Node):
     multiplier = cy.declare(cy.double)
     _prices_set = cy.declare(cy.bint)
     _needupdate = cy.declare(cy.bint)
+    _outlay = cy.declare(cy.double)
 
     @cy.locals(multiplier=cy.double)
     def __init__(self, name, multiplier=1):
@@ -798,6 +825,7 @@ class SecurityBase(Node):
         self._last_pos = 0
         self._issec = True
         self._needupdate = True
+        self._outlay = 0
 
     @property
     def price(self):
@@ -817,7 +845,7 @@ class SecurityBase(Node):
         # if accessing and stale - update first
         if self._needupdate or self.now != self.parent.now:
             self.update(self.root.now)
-        return self._prices.ix[:self.now]
+        return self._prices.loc[:self.now]
 
     @property
     def values(self):
@@ -829,7 +857,7 @@ class SecurityBase(Node):
             self.update(self.root.now)
         if self.root.stale:
             self.root.update(self.root.now, None)
-        return self._values.ix[:self.now]
+        return self._values.loc[:self.now]
 
     @property
     def position(self):
@@ -849,7 +877,18 @@ class SecurityBase(Node):
             self.update(self.root.now)
         if self.root.stale:
             self.root.update(self.root.now, None)
-        return self._positions.ix[:self.now]
+        return self._positions.loc[:self.now]
+
+    @property
+    def outlays(self):
+        """
+        TimeSeries of outlays. Positive outlays (buys) mean this security
+        received and consumed capital (capital was allocated to it). Negative
+        outlays are the opposite (the security close/sold, and returned capital
+        to parent).
+        """
+        # if accessing and stale - update first
+        return self._outlays.loc[:self.now]
 
     def setup(self, universe):
         """
@@ -861,7 +900,7 @@ class SecurityBase(Node):
 
         """
         # if we already have all the prices, we will store them to speed up
-        # future udpates
+        # future updates
         try:
             prices = universe[self.name]
         except KeyError:
@@ -882,6 +921,10 @@ class SecurityBase(Node):
 
         self._values = self.data['value']
         self._positions = self.data['position']
+
+        # add _outlay
+        self.data['outlay'] = 0.
+        self._outlays = self.data['outlay']
 
     @cy.locals(prc=cy.double)
     def update(self, date, data=None, inow=None):
@@ -918,20 +961,36 @@ class SecurityBase(Node):
         self._positions.values[inow] = self._position
         self._last_pos = self._position
 
-        self._value = self._position * self._price * self.multiplier
+        if np.isnan(self._price):
+            if self._position == 0:
+                self._value = 0
+            else:
+                raise Exception(
+                    'Position is open (non-zero) and latest price is NaN '
+                    'for security %s. Cannot update node value.' % self.name)
+        else:
+            self._value = self._position * self._price * self.multiplier
+
         self._values.values[inow] = self._value
 
         if self._weight == 0 and self._position == 0:
             self._needupdate = False
 
-    @cy.locals(amount=cy.double, update=cy.bint, q=cy.double, outlay=cy.double)
+        # save outlay to outlays
+        if self._outlay != 0:
+            self._outlays.values[inow] = self._outlay
+            # reset outlay back to 0
+            self._outlay = 0
+
+    @cy.locals(amount=cy.double, update=cy.bint, q=cy.double, outlay=cy.double,
+               i=cy.int)
     def allocate(self, amount, update=True):
         """
         This allocates capital to the Security. This is the method used to
         buy/sell the security.
 
         A given amount of shares will be determined on the current price, a
-        commisison will be calculated based on the parent's commission fn, and
+        commission will be calculated based on the parent's commission fn, and
         any remaining capital will be passed back up  to parent as an
         adjustment.
 
@@ -948,12 +1007,12 @@ class SecurityBase(Node):
             self.update(self.parent.now)
 
         # ignore 0 alloc
-        # Note that if the price of security has dropped to zero, then it should
-        # never be selected by SelectAll, SelectN etc. I.e. we should not open
-        # the position at zero price. At the same time, we are able to close
-        # it at zero price, because at that point amount=0.
-        # Note also that we don't erase the position in an asset which price has
-        # dropped to zero (though the weight will indeed be = 0)
+        # Note that if the price of security has dropped to zero, then it
+        # should never be selected by SelectAll, SelectN etc. I.e. we should
+        # not open the position at zero price. At the same time, we are able
+        # to close it at zero price, because at that point amount=0.
+        # Note also that we don't erase the position in an asset which price
+        # has dropped to zero (though the weight will indeed be = 0)
         if amount == 0:
             return
 
@@ -987,6 +1046,95 @@ class SecurityBase(Node):
         if q == 0 or np.isnan(q):
             return
 
+        # unless we are closing out a position (q == -position)
+        # we want to ensure that
+        #
+        # - In the event of a positive amount, this indicates the maximum
+        # amount a given security can use up for a purchase. Therefore, if
+        # commissions push us above this amount, we cannot buy `q`, and must
+        # decrease its value
+        #
+        # - In the event of a negative amount, we want to 'raise' at least the
+        # amount indicated, no less. Therefore, if we have commission, we must
+        # sell additional units to fund this requirement. As such, q must once
+        # again decrease.
+        #
+        if not q == -self._position:
+            full_outlay, _, _ = self.outlay(q)
+
+            # if full outlay > amount, we must decrease the magnitude of `q`
+            # this can potentially lead to an infinite loop if the commission
+            # per share > price per share. However, we cannot really detect
+            # that in advance since the function can be non-linear (say a fn
+            # like max(1, abs(q) * 0.01). Nevertheless, we want to avoid these
+            # situations.
+            # cap the maximum number of iterations to 1e4 and raise exception
+            # if we get there
+            # if integer positions then we know we are stuck if q doesn't change
+
+            # if integer positions is false then we want full_outlay == amount
+            # if integer positions is true then we want to be at the q where
+            #   if we bought 1 more then we wouldn't have enough cash
+            i = 0
+            last_q = q
+            last_amount_short = full_outlay - amount
+            while not np.isclose(full_outlay, amount, rtol=0.) and q != 0:
+
+                dq_wout_considering_tx_costs = (full_outlay - amount)/(self._price * self.multiplier)
+                q = q - dq_wout_considering_tx_costs
+
+                if self.integer_positions:
+                    q = math.floor(q)
+
+                full_outlay, _, _ = self.outlay(q)
+
+                # if our q is too low and we have integer positions
+                # then we know that the correct quantity is the one  where
+                # the outlay of q + 1 < amount. i.e. if we bought one more
+                # position then we wouldn't have enough cash
+                if self.integer_positions:
+
+                    full_outlay_of_1_more, _, _ = self.outlay(q + 1)
+
+                    if full_outlay < amount and full_outlay_of_1_more > amount:
+                        break
+
+                # if not integer positions then we should keep going until
+                # full_outlay == amount or is close enough
+
+                i = i + 1
+                if i > 1e4:
+                    raise Exception(
+                        'Potentially infinite loop detected. This occurred '
+                        'while trying to reduce the amount of shares purchased'
+                        ' to respect the outlay <= amount rule. This is most '
+                        'likely due to a commission function that outputs a '
+                        'commission that is greater than the amount of cash '
+                        'a short sale can raise.')
+
+                if self.integer_positions and last_q == q:
+                    raise Exception(
+                        'Newton Method like root search for quantity is stuck!'
+                        ' q did not change in iterations so it is probably a bug'
+                        ' but we are not entirely sure it is wrong! Consider '
+                        ' changing to warning.'
+                    )
+                last_q = q
+
+                if np.abs(full_outlay - amount) > np.abs(last_amount_short):
+                    raise Exception(
+                        'The difference between what we have raised with q and'
+                        ' the amount we are trying to raise has gotten bigger since'
+                        ' last iteration! full_outlay should always be approaching'
+                        ' amount! There may be a case where the commission fn is'
+                        ' not smooth'
+                    )
+                last_amount_short = full_outlay - amount
+
+        # if last step led to q == 0, then we can return just like above
+        if q == 0:
+            return
+
         # this security will need an update, even if pos is 0 (for example if
         # we close the positions, value and pos is 0, but still need to do that
         # last update)
@@ -999,16 +1147,19 @@ class SecurityBase(Node):
         # parent passed down amount so we want to pass
         # -outlay back up to parent to adjust for capital
         # used
-        outlay, fee = self.outlay(q)
+        full_outlay, outlay, fee = self.outlay(q)
+
+        # store outlay for future reference
+        self._outlay += outlay
 
         # call parent
-        self.parent.adjust(-outlay, update=update, flow=False, fee=fee)
+        self.parent.adjust(-full_outlay, update=update, flow=False, fee=fee)
 
     @cy.locals(q=cy.double, p=cy.double)
     def commission(self, q, p):
         """
-        Calculates the commission (transaction fee) based on quantity and price.
-        Uses the parent's commission_fn.
+        Calculates the commission (transaction fee) based on quantity and
+        price.  Uses the parent's commission_fn.
 
         Args:
             * q (float): quantity
@@ -1029,8 +1180,8 @@ class SecurityBase(Node):
 
         """
         fee = self.commission(q, self._price * self.multiplier)
-        full_outlay = q * self._price * self.multiplier + fee
-        return full_outlay, fee
+        outlay = q * self._price * self.multiplier
+        return outlay + fee, outlay, fee
 
     def run(self):
         """
@@ -1047,12 +1198,12 @@ class Algo(object):
     Algo should follow the unix philosophy - do one thing well.
 
     In practice, algos are simply a function that receives one argument, the
-    Strategy (refered to as target) and are expected to return a bool.
+    Strategy (referred to as target) and are expected to return a bool.
 
     When some state preservation is necessary between calls, the Algo
     object can be used (this object). The __call___ method should be
     implemented and logic defined therein to mimic a function call. A
-    simple function may also be used if no state preservation is neceesary.
+    simple function may also be used if no state preservation is necessary.
 
     Args:
         * name (str): Algo name
@@ -1096,7 +1247,7 @@ class AlgoStack(Algo):
                                     for x in self.algos)
 
     def __call__(self, target):
-        # normal runing mode
+        # normal running mode
         if not self.check_run_always:
             for algo in self.algos:
                 if not algo(target):
@@ -1143,8 +1294,10 @@ class Strategy(StrategyBase):
 
     """
 
-    def __init__(self, name, algos=[], children=None):
+    def __init__(self, name, algos=None, children=None):
         super(Strategy, self).__init__(name, children=children)
+        if algos is None:
+            algos = []
         self.stack = AlgoStack(*algos)
         self.temp = {}
         self.perm = {}

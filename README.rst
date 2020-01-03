@@ -1,6 +1,12 @@
 .. image:: http://pmorissette.github.io/bt/_static/logo.png
 
-bt - Flexible Backtesting for Python
+.. image:: https://travis-ci.org/pmorissette/bt.svg?branch=master
+    :target: https://travis-ci.org/pmorissette/bt
+
+.. image:: https://codecov.io/gh/pmorissette/bt/branch/master/graph/badge.svg
+    :target: https://codecov.io/pmorissette/bt
+
+bt - Flexible Backtesting for Python 
 ====================================
 
 bt is currently in alpha stage - if you find a bug, please submit an issue.
@@ -113,6 +119,7 @@ Special Thanks
 A special thanks to the following contributors for their involvement with the project:
 
 * Vladimir Filimonov `@vfilimonov <https://github.com/vfilimonov>`_ 
+* Jordan Platts `@JordanPlatts <https://github.com/JordanPlatts>`_ 
 
 
 License

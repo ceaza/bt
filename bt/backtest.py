@@ -6,7 +6,9 @@ from copy import deepcopy
 import bt
 import ffn
 import pandas as pd
+import numpy as np
 from matplotlib import pyplot as plt
+import pyprind
 
 
 def run(*backtests):
@@ -97,7 +99,9 @@ class Backtest(object):
         * name (str): Backtest name - defaults to strategy name
         * initial_capital (float): Initial amount of capital passed to
             Strategy.
-        * commission (fn(quantity)): The commission function to be used.
+        * commissions (fn(quantity, price)): The commission function
+        to be used. Ex: commissions=lambda q, p: max(1, abs(q) * 0.01)
+        * progress_bar (Bool): Display progress bar while running backtest
 
     Attributes:
         * strategy (Strategy): The Backtest's Strategy. This will be a deepcopy
@@ -118,7 +122,8 @@ class Backtest(object):
                  name=None,
                  initial_capital=1000000.0,
                  commissions=None,
-                 integer_positions=True):
+                 integer_positions=True,
+                 progress_bar=True):
 
         if data.columns.duplicated().any():
             cols = data.columns[data.columns.duplicated().tolist()].tolist()
@@ -131,12 +136,25 @@ class Backtest(object):
         self.strategy = deepcopy(strategy)
         self.strategy.use_integer_positions(integer_positions)
 
+        # add virtual row at t0-1day with NaNs
+        # this is so that any trading action at t0 can be evaluated relative to
+        # a clean starting point. This is related to #83. Basically, if you
+        # have a big trade / commision on day 0, then the Strategy.prices will
+        # be adjusted at 0, and hide the 'total' return. The series should
+        # start at 100, but may start at 90, for example. Here, we add a
+        # starting point at t0-1day, and this is the reference starting point
+        data = pd.concat([
+            pd.DataFrame(np.nan, columns=data.columns,
+                         index=[data.index[0] - pd.DateOffset(days=1)]),
+            data])
+
         self.data = data
         self.dates = data.index
         self.initial_capital = initial_capital
         self.name = name if name is not None else strategy.name
+        self.progress_bar = progress_bar
 
-        if commissions:
+        if commissions is not None:
             self.strategy.set_commissions(commissions)
 
         self.stats = {}
@@ -149,7 +167,10 @@ class Backtest(object):
         """
         Runs the Backtest.
         """
-        # set run flag
+        if self.has_run:
+            return
+
+        # set run flag to avoid running same test more than once
         self.has_run = True
 
         # setup strategy
@@ -159,12 +180,30 @@ class Backtest(object):
         self.strategy.adjust(self.initial_capital)
 
         # loop through dates
-        for dt in self.dates:
+        # init progress bar
+        if self.progress_bar:
+            bar = pyprind.ProgBar(len(self.dates), title=self.name, stream=1)
+
+        # since there is a dummy row at time 0, start backtest at date 1.
+        # we must still update for t0
+        self.strategy.update(self.dates[0])
+
+        # and for the backtest loop, start at date 1
+        for dt in self.dates[1:]:
+            # update progress bar
+            if self.progress_bar:
+                bar.update()
+
+            # update strategy
             self.strategy.update(dt)
+
             if not self.strategy.bankrupt:
                 self.strategy.run()
                 # need update after to save weights, values and such
                 self.strategy.update(dt)
+            else:
+                if self.progress_bar:
+                    bar.stop()
 
         self.stats = self.strategy.prices.calc_perf_stats()
         self._original_prices = self.strategy.prices
@@ -234,6 +273,30 @@ class Backtest(object):
         w = self.security_weights
         return (w ** 2).sum(axis=1)
 
+    @property
+    def turnover(self):
+        """
+        Calculate the turnover for the backtest.
+
+        This function will calculate the turnover for the strategy. Turnover is
+        defined as the lesser of positive or negative outlays divided by NAV
+        """
+        s = self.strategy
+        outlays = s.outlays
+
+        # seperate positive and negative outlays, sum them up, and keep min
+        outlaysp = outlays[outlays >= 0].fillna(value=0).sum(axis=1)
+        outlaysn = np.abs(outlays[outlays < 0].fillna(value=0).sum(axis=1))
+
+        # merge and keep minimum
+        min_outlay = pd.DataFrame(
+            {'pos': outlaysp, 'neg': outlaysn}).min(axis=1)
+
+        # turnover is defined as min outlay / nav
+        mrg = pd.DataFrame({'outlay': min_outlay, 'nav': s.values})
+
+        return mrg['outlay'] / mrg['nav']
+
 
 class Result(ffn.GroupStats):
 
@@ -267,13 +330,33 @@ class Result(ffn.GroupStats):
         key = self._get_backtest(backtest)
         self[key].display_monthly_returns()
 
+    def get_weights(self, backtest=0, filter=None):
+        """
+
+        :param backtest: (str, int) Backtest can be either a index (int) or the
+                name (str)
+        :param filter: (list, str) filter columns for specific columns. Filter
+                is simply passed as is to DataFrame[filter], so use something
+                that makes sense with a DataFrame.
+        :return: (pd.DataFrame) DataFrame of weights
+        """
+
+        key = self._get_backtest(backtest)
+
+        if filter is not None:
+            data = self.backtests[key].weights[filter]
+        else:
+            data = self.backtests[key].weights
+
+        return data
+
     def plot_weights(self, backtest=0, filter=None,
                      figsize=(15, 5), **kwds):
         """
         Plots the weights of a given backtest over time.
 
         Args:
-            * backtest (str, int): Backtest. Can be either a index (int) or the
+            * backtest (str, int): Backtest can be either a index (int) or the
                 name (str)
             * filter (list, str): filter columns for specific columns. Filter
                 is simply passed as is to DataFrame[filter], so use something
@@ -282,14 +365,29 @@ class Result(ffn.GroupStats):
             * kwds (dict): Keywords passed to plot
 
         """
+        data = self.get_weights(backtest, filter)
+
+        data.plot(figsize=figsize, **kwds)
+
+    def get_security_weights(self, backtest=0, filter=None):
+        """
+
+        :param backtest: (str, int) Backtest can be either a index (int) or the
+                name (str)
+        :param filter: (list, str) filter columns for specific columns. Filter
+                is simply passed as is to DataFrame[filter], so use something
+                that makes sense with a DataFrame.
+        :return: (pd.DataFrame) DataFrame of security weights
+        """
+
         key = self._get_backtest(backtest)
 
         if filter is not None:
-            data = self.backtests[key].weights[filter]
+            data = self.backtests[key].security_weights[filter]
         else:
-            data = self.backtests[key].weights
+            data = self.backtests[key].security_weights
 
-        data.plot(figsize=figsize, **kwds)
+        return data
 
     def plot_security_weights(self, backtest=0, filter=None,
                               figsize=(15, 5), **kwds):
@@ -306,12 +404,7 @@ class Result(ffn.GroupStats):
             * kwds (dict): Keywords passed to plot
 
         """
-        key = self._get_backtest(backtest)
-
-        if filter is not None:
-            data = self.backtests[key].security_weights[filter]
-        else:
-            data = self.backtests[key].security_weights
+        data = self.get_security_weights(backtest, filter)
 
         data.plot(figsize=figsize, **kwds)
 
@@ -335,6 +428,49 @@ class Result(ffn.GroupStats):
 
         # default case assume ok
         return backtest
+
+    def get_transactions(self, strategy_name=None):
+        """
+        Helper function that returns the transactions in the following format:
+
+            dt, security | quantity, price
+
+        The result is a MultiIndex DataFrame.
+
+        Args:
+            * strategy_name (str): If none, it will take the first backtest's
+                strategy (self.backtest_list[0].name)
+
+        """
+        if strategy_name is None:
+            strategy_name = self.backtest_list[0].name
+
+        # extract strategy given strategy_name
+        s = self.backtests[strategy_name].strategy
+
+        # get prices for each security in the strategy & create unstacked
+        # series
+        prc = pd.DataFrame({x.name: x.prices for x in s.securities}).unstack()
+
+        # get security positions
+        positions = pd.DataFrame({x.name: x.positions for x in s.securities})
+        # trades are diff
+        trades = positions.diff()
+        # must adjust first row
+        trades.iloc[0] = positions.iloc[0]
+        # now convert to unstacked series, dropping nans along the way
+        trades = trades[trades != 0].unstack().dropna()
+
+        res = pd.DataFrame({'price': prc, 'quantity': trades}).dropna(
+            subset=['quantity'])
+
+        # set names
+        res.index.names = ['Security', 'Date']
+
+        # swap levels so that we have (date, security) as index and sort
+        res = res.swaplevel().sort_index()
+
+        return res
 
 
 class RandomBenchmarkResult(Result):
@@ -392,7 +528,7 @@ class RandomBenchmarkResult(Result):
 
         ser = self.r_stats.ix[statistic]
 
-        ax = ser.hist(bins=bins, figsize=figsize, normed=True, **kwargs)
+        ax = ser.hist(bins=bins, figsize=figsize, density=True, **kwargs)
         ax.set_title(title)
         plt.axvline(self.b_stats[statistic], linewidth=4)
         ser.plot(kind='kde')

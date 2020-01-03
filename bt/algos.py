@@ -3,11 +3,14 @@ A collection of Algos used to create Strategy logic.
 """
 from __future__ import division
 from future.utils import iteritems
+import abc
 import bt
 from bt.core import Algo, AlgoStack
 import pandas as pd
 import numpy as np
 import random
+
+import sklearn.covariance
 
 
 def run_always(f):
@@ -70,7 +73,7 @@ class PrintInfo(Algo):
         self.fmt_string = fmt_string
 
     def __call__(self, target):
-        print(self.fmt_string.format(target.__dict__))
+        print(self.fmt_string.format(**target.__dict__))
         return True
 
 
@@ -93,8 +96,12 @@ class RunOnce(Algo):
     """
     Returns True on first run then returns False.
 
+    Args:
+        * run_on_first_call: bool which determines if it runs the first time the algo is called
+
     As the name says, the algo only runs once. Useful in situations
     where we want to run the logic once (buy and hold for example).
+
     """
 
     def __init__(self):
@@ -112,202 +119,173 @@ class RunOnce(Algo):
         return False
 
 
-class RunDaily(Algo):
+class RunPeriod(Algo):
+
+    def __init__(self, run_on_first_date=True, run_on_end_of_period=False, run_on_last_date=False):
+        super(RunPeriod, self).__init__()
+        self._run_on_first_date = run_on_first_date
+        self._run_on_end_of_period = run_on_end_of_period
+        self._run_on_last_date = run_on_last_date
+
+    def __call__(self, target):
+        # get last date
+        now = target.now
+
+        # if none nothing to do - return false
+        if now is None:
+            return False
+
+        # not a known date in our universe
+        if now not in target.data.index:
+            return False
+
+        # get index of the current date
+        index = target.data.index.get_loc(target.now)
+
+        result = False
+
+        # index 0 is a date added by the Backtest Constructor
+        if index == 0:
+            return False
+        # first date
+        if index == 1:
+            if self._run_on_first_date:
+                result = True
+        # last date
+        elif index == (len(target.data.index) - 1):
+            if self._run_on_last_date:
+                result = True
+        else:
+
+            # create pandas.Timestamp for useful .week,.quarter properties
+            now = pd.Timestamp(now)
+
+            index_offset = -1
+            if self._run_on_end_of_period:
+                index_offset = 1
+
+            date_to_compare = target.data.index[index + index_offset]
+            date_to_compare = pd.Timestamp(date_to_compare)
+
+            result = self.compare_dates(now, date_to_compare)
+
+        return result
+
+    @abc.abstractmethod
+    def compare_dates(self, now, date_to_compare):
+        raise(NotImplementedError('RunPeriod Algo is an abstract class!'))
+
+
+class RunDaily(RunPeriod):
 
     """
     Returns True on day change.
 
+    Args:
+        * run_on_first_date (bool): determines if it runs the first time the algo is called
+        * run_on_end_of_period (bool): determines if it should run at the end of the period
+          or the beginning
+        * run_on_last_date (bool): determines if it runs on the last time the algo is called
+
     Returns True if the target.now's day has changed
-    since the last run, if not returns False. Useful for
-    daily rebalancing strategies.
+    compared to the last(or next if run_on_end_of_period) date, if not returns False.
+    Useful for daily rebalancing strategies.
 
     """
-
-    def __init__(self):
-        super(RunDaily, self).__init__()
-        self.last_date = None
-
-    def __call__(self, target):
-        # get last date
-        now = target.now
-
-        # if none nothing to do - return false
-        if now is None:
-            return False
-
-        # create pandas.Timestamp for useful .week property
-        now = pd.Timestamp(now)
-
-        if self.last_date is None:
-            self.last_date = now
-            return False
-
-        result = False
-        if now.date() != self.last_date.date():
-            result = True
-
-        self.last_date = now
-        return result
+    def compare_dates(self, now, date_to_compare):
+        if now.date() != date_to_compare.date():
+            return True
+        return False
 
 
-class RunWeekly(Algo):
+class RunWeekly(RunPeriod):
 
     """
     Returns True on week change.
 
-    Returns True if the target.now's week has changed
-    since the last run, if not returns False. Useful for
-    weekly rebalancing strategies.
+    Args:
+        * run_on_first_date (bool): determines if it runs the first time the algo is called
+        * run_on_end_of_period (bool): determines if it should run at the end of the period
+          or the beginning
+        * run_on_last_date (bool): determines if it runs on the last time the algo is called
 
-    Note:
-        This algo will typically run on the first day of the
-        week (assuming we have daily data)
+    Returns True if the target.now's week has changed
+    since relative to the last(or next) date, if not returns False. Useful for
+    weekly rebalancing strategies.
 
     """
 
-    def __init__(self):
-        super(RunWeekly, self).__init__()
-        self.last_date = None
+    def compare_dates(self, now, date_to_compare):
+        if now.year != date_to_compare.year or now.week != date_to_compare.week:
+            return True
+        return False
 
-    def __call__(self, target):
-        # get last date
-        now = target.now
-
-        # if none nothing to do - return false
-        if now is None:
-            return False
-
-        # create pandas.Timestamp for useful .week property
-        now = pd.Timestamp(now)
-
-        if self.last_date is None:
-            self.last_date = now
-            return False
-
-        result = False
-        if now.week != self.last_date.week:
-            result = True
-
-        self.last_date = now
-        return result
-
-
-class RunMonthly(Algo):
+class RunMonthly(RunPeriod):
 
     """
     Returns True on month change.
 
-    Returns True if the target.now's month has changed
-    since the last run, if not returns False. Useful for
-    monthly rebalancing strategies.
+    Args:
+        * run_on_first_date (bool): determines if it runs the first time the algo is called
+        * run_on_end_of_period (bool): determines if it should run at the end of the period
+          or the beginning
+        * run_on_last_date (bool): determines if it runs on the last time the algo is called
 
-    Note:
-        This algo will typically run on the first day of the
-        month (assuming we have daily data)
+    Returns True if the target.now's month has changed
+    since relative to the last(or next) date, if not returns False. Useful for
+    monthly rebalancing strategies.
 
     """
 
-    def __init__(self):
-        super(RunMonthly, self).__init__()
-        self.last_date = None
-
-    def __call__(self, target):
-        # get last date
-        now = target.now
-
-        # if none nothing to do - return false
-        if now is None:
-            return False
-
-        if self.last_date is None:
-            self.last_date = now
-            return False
-
-        result = False
-        if now.month != self.last_date.month:
-            result = True
-
-        self.last_date = now
-        return result
+    def compare_dates(self, now, date_to_compare):
+        if now.year != date_to_compare.year or now.month != date_to_compare.month:
+            return True
+        return False
 
 
-class RunQuarterly(Algo):
+class RunQuarterly(RunPeriod):
 
     """
     Returns True on quarter change.
 
-    Returns True if the target.now's month has changed
-    since the last run and the month is the first month
-    of the quarter, if not returns False. Useful for
-    quarterly rebalancing strategies.
+    Args:
+        * run_on_first_date (bool): determines if it runs the first time the algo is called
+        * run_on_end_of_period (bool): determines if it should run at the end of the period
+          or the beginning
+        * run_on_last_date (bool): determines if it runs on the last time the algo is called
 
-    Note:
-        This algo will typically run on the first day of the
-        quarter (assuming we have daily data)
+    Returns True if the target.now's quarter has changed
+    since relative to the last(or next) date, if not returns False. Useful for
+    quarterly rebalancing strategies.
 
     """
 
-    def __init__(self):
-        super(RunQuarterly, self).__init__()
-        self.last_date = None
+    def compare_dates(self, now, date_to_compare):
+        if now.year != date_to_compare.year or now.quarter != date_to_compare.quarter:
+            return True
+        return False
 
-    def __call__(self, target):
-        # get last date
-        now = target.now
-
-        # if none nothing to do - return false
-        if now is None:
-            return False
-
-        if self.last_date is None:
-            self.last_date = now
-            return False
-
-        result = False
-        if now.quarter != self.last_date.quarter:
-            result = True
-
-        self.last_date = now
-        return result
-
-
-class RunYearly(Algo):
+class RunYearly(RunPeriod):
 
     """
     Returns True on year change.
 
-    Returns True if the target.now's year has changed
-    since the last run, if not returns False. Useful for
-    yearly rebalancing strategies.
+    Args:
+        * run_on_first_date (bool): determines if it runs the first time the algo is called
+        * run_on_end_of_period (bool): determines if it should run at the end of the period
+          or the beginning
+        * run_on_last_date (bool): determines if it runs on the last time the algo is called
 
-    Note:
-        This algo will typically run on the first day of the
-        year (assuming we have daily data)
+    Returns True if the target.now's year has changed
+    since relative to the last(or next) date, if not returns False. Useful for
+    yearly rebalancing strategies.
 
     """
 
-    def __init__(self):
-        super(RunYearly, self).__init__()
-        self.last_date = None
-
-    def __call__(self, target):
-        # get last date
-        now = target.now
-
-        # if none nothing to do - return false
-        if now is None:
-            return False
-
-        if self.last_date is None:
-            self.last_date = now
-            return False
-
-        result = False
-        if now.year != self.last_date.year:
-            result = True
-
-        self.last_date = now
-        return result
+    def compare_dates(self, now, date_to_compare):
+        if now.year != date_to_compare.year:
+            return True
+        return False
 
 
 class RunOnDate(Algo):
@@ -455,7 +433,7 @@ class SelectAll(Algo):
         if self.include_no_data:
             target.temp['selected'] = target.universe.columns
         else:
-            universe = target.universe.ix[target.now].dropna()
+            universe = target.universe.loc[target.now].dropna()
             target.temp['selected'] = list(universe[universe > 0].index)
         return True
 
@@ -484,7 +462,7 @@ class SelectThese(Algo):
         if self.include_no_data:
             target.temp['selected'] = self.tickers
         else:
-            universe = target.universe[self.tickers].ix[target.now].dropna()
+            universe = target.universe[self.tickers].loc[target.now].dropna()
             target.temp['selected'] = list(universe[universe > 0].index)
         return True
 
@@ -539,11 +517,11 @@ class SelectHasData(Algo):
         else:
             selected = target.universe.columns
 
-        filt = target.universe[selected].ix[target.now - self.lookback:]
+        filt = target.universe[selected].loc[target.now - self.lookback:]
         cnt = filt.count()
         cnt = cnt[cnt >= self.min_count]
         if not self.include_no_data:
-            cnt = cnt[target.universe[selected].ix[target.now] > 0]
+            cnt = cnt[target.universe[selected].loc[target.now] > 0]
         target.temp['selected'] = list(cnt.index)
         return True
 
@@ -584,7 +562,8 @@ class SelectN(Algo):
 
     def __call__(self, target):
         stat = target.temp['stat'].dropna()
-        stat.sort(ascending=self.ascending)
+        stat.sort_values(ascending=self.ascending,
+                         inplace=True)
 
         # handle percent n
         keep_n = self.n
@@ -665,13 +644,14 @@ class SelectWhere(Algo):
     def __call__(self, target):
         # get signal Series at target.now
         if target.now in self.signal.index:
-            sig = self.signal.ix[target.now]
+            sig = self.signal.loc[target.now]
             # get tickers where True
-            selected = sig.index[sig]
+            #selected = sig.index[sig]
+            selected = sig[sig == True].index
             # save as list
             if not self.include_no_data:
                 universe = target.universe[
-                    list(selected)].ix[target.now].dropna()
+                    list(selected)].loc[target.now].dropna()
                 selected = list(universe[universe > 0].index)
             target.temp['selected'] = list(selected)
 
@@ -720,12 +700,12 @@ class SelectRandomly(AlgoStack):
             sel = target.universe.columns
 
         if not self.include_no_data:
-            universe = target.universe[list(sel)].ix[target.now].dropna()
+            universe = target.universe[list(sel)].loc[target.now].dropna()
             sel = list(universe[universe > 0].index)
 
         if self.n is not None:
             n = self.n if self.n < len(sel) else len(sel)
-            sel = random.sample(sel, n)
+            sel = random.sample(sel, int(n))
 
         target.temp['selected'] = sel
         return True
@@ -762,7 +742,7 @@ class StatTotalReturn(Algo):
     def __call__(self, target):
         selected = target.temp['selected']
         t0 = target.now - self.lag
-        prc = target.universe[selected].ix[t0 - self.lookback:t0]
+        prc = target.universe[selected].loc[t0 - self.lookback:t0]
         target.temp['stat'] = prc.calc_total_return()
         return True
 
@@ -830,9 +810,9 @@ class WeighTarget(Algo):
     Sets target weights based on a target weight DataFrame.
 
     If the target weight dataFrame is  of same dimension
-    as the target.universe, the portfolio will effectively be rebalanced on each
-    period. For example, if we have daily data and the target DataFrame is of
-    the same shape, we will have daily rebalancing.
+    as the target.universe, the portfolio will effectively be rebalanced on
+    each period. For example, if we have daily data and the target DataFrame
+    is of the same shape, we will have daily rebalancing.
 
     However, if we provide a target weight dataframe that has only month end
     dates, then rebalancing only occurs monthly.
@@ -855,7 +835,7 @@ class WeighTarget(Algo):
     def __call__(self, target):
         # get current target weights
         if target.now in self.weights.index:
-            w = self.weights.ix[target.now]
+            w = self.weights.loc[target.now]
 
             # dropna and save
             target.temp['weights'] = w.dropna()
@@ -904,9 +884,94 @@ class WeighInvVol(Algo):
             return True
 
         t0 = target.now - self.lag
-        prc = target.universe[selected].ix[t0 - self.lookback:t0]
+        prc = target.universe[selected].loc[t0 - self.lookback:t0]
         tw = bt.ffn.calc_inv_vol_weights(
             prc.to_returns().dropna())
+        target.temp['weights'] = tw.dropna()
+        return True
+
+
+class WeighERC(Algo):
+
+    """
+    Sets temp['weights'] based on equal risk contribution algorithm.
+
+    Sets the target weights based on ffn's calc_erc_weights. This
+    is an extension of the inverse volatility risk parity portfolio in
+    which the correlation of asset returns is incorporated into the
+    calculation of risk contribution of each asset.
+
+    The resulting portfolio is similar to a minimum variance portfolio
+    subject to a diversification constraint on the weights of its components
+    and its volatility is located between those of the minimum variance and
+    equally-weighted portfolios (Maillard 2008).
+
+    See:
+        https://en.wikipedia.org/wiki/Risk_parity
+
+    Args:
+        * lookback (DateOffset): lookback period for estimating covariance
+        * initial_weights (list): Starting asset weights [default inverse vol].
+        * risk_weights (list): Risk target weights [default equal weight].
+        * covar_method (str): method used to estimate the covariance. See ffn's
+            calc_erc_weights for more details. (default ledoit-wolf).
+        * risk_parity_method (str): Risk parity estimation method. see ffn's
+            calc_erc_weights for more details. (default ccd).
+        * maximum_iterations (int): Maximum iterations in iterative solutions
+            (default 100).
+        * tolerance (float): Tolerance level in iterative solutions (default 1E-8).
+
+
+    Sets:
+        * weights
+
+    Requires:
+        * selected
+
+    """
+
+    def __init__(self,
+                 lookback=pd.DateOffset(months=3),
+                 initial_weights=None,
+                 risk_weights=None,
+                 covar_method='ledoit-wolf',
+                 risk_parity_method='ccd',
+                 maximum_iterations=100,
+                 tolerance=1E-8,
+                 lag=pd.DateOffset(days=0)):
+
+        super(WeighERC, self).__init__()
+        self.lookback = lookback
+        self.initial_weights = initial_weights
+        self.risk_weights = risk_weights
+        self.covar_method = covar_method
+        self.risk_parity_method = risk_parity_method
+        self.maximum_iterations = maximum_iterations
+        self.tolerance = tolerance
+        self.lag = lag
+
+    def __call__(self, target):
+        selected = target.temp['selected']
+
+        if len(selected) == 0:
+            target.temp['weights'] = {}
+            return True
+
+        if len(selected) == 1:
+            target.temp['weights'] = {selected[0]: 1.}
+            return True
+
+        t0 = target.now - self.lag
+        prc = target.universe[selected].loc[t0 - self.lookback:t0]
+        tw = bt.ffn.calc_erc_weights(
+            prc.to_returns().dropna(),
+            initial_weights=self.initial_weights,
+            risk_weights=self.risk_weights,
+            covar_method=self.covar_method,
+            risk_parity_method=self.risk_parity_method,
+            maximum_iterations=self.maximum_iterations,
+            tolerance=self.tolerance)
+
         target.temp['weights'] = tw.dropna()
         return True
 
@@ -960,7 +1025,7 @@ class WeighMeanVar(Algo):
             return True
 
         t0 = target.now - self.lag
-        prc = target.universe[selected].ix[t0 - self.lookback:t0]
+        prc = target.universe[selected].loc[t0 - self.lookback:t0]
         tw = bt.ffn.calc_mean_var_weights(
             prc.to_returns().dropna(), weight_bounds=self.bounds,
             covar_method=self.covar_method, rf=self.rf)
@@ -1115,8 +1180,186 @@ class LimitWeights(Algo):
         if len(tw) == 0:
             return True
 
-        tw = bt.ffn.limit_weights(tw, self.limit)
+        # if the limit < equal weight then set weights to 0
+        if self.limit < 1.0 / len(tw):
+            tw = {}
+        else:
+            tw = bt.ffn.limit_weights(tw, self.limit)
         target.temp['weights'] = tw
+
+        return True
+
+
+class TargetVol(Algo):
+    """
+    Updates temp['weights'] based on the target annualized volatility desired.
+
+    Args:
+        * target_volatility: annualized volatility to target
+        * lookback (DateOffset): lookback period for estimating volatility
+        * lag (DateOffset): amount of time to wait to calculate the covariance
+        * covar_method: method of calculating volatility
+        * annualization_factor: number of periods to annualize by.
+            It is assumed that target volatility is already annualized by this factor.
+
+    Updates:
+        * weights
+
+    Requires:
+        * temp['weights']
+
+
+    """
+
+    def __init__(
+            self,
+            target_volatility,
+            lookback=pd.DateOffset(months=3),
+            lag=pd.DateOffset(days=0),
+            covar_method='standard',
+            annualization_factor=252
+    ):
+
+        super(TargetVol, self).__init__()
+        self.target_volatility = target_volatility
+        self.lookback = lookback
+        self.lag = lag
+        self.covar_method = covar_method
+        self.annualization_factor = annualization_factor
+
+    def __call__(self, target):
+
+        current_weights = target.temp['weights']
+        selected = current_weights.keys()
+
+        # if there were no weights already set then skip
+        if len(selected) == 0:
+            return True
+
+
+        t0 = target.now - self.lag
+        prc = target.universe.loc[t0 - self.lookback:t0, selected]
+        returns = bt.ffn.to_returns(prc)
+
+        # calc covariance matrix
+        if self.covar_method == 'ledoit-wolf':
+            covar = sklearn.covariance.ledoit_wolf(returns)
+        elif self.covar_method == 'standard':
+            covar = returns.cov()
+        else:
+            raise NotImplementedError('covar_method not implemented')
+
+        weights = pd.Series(
+            [current_weights[x] for x in covar.columns],
+            index=covar.columns
+        )
+
+        vol = np.sqrt(np.matmul(weights.values.T,np.matmul(covar,weights.values))*self.annualization_factor)
+
+        #vol is too high
+        if vol > self.target_volatility:
+            mult = self.target_volatility/vol
+        #vol is too low
+        elif vol < self.target_volatility:
+            mult = self.target_volatility/vol
+        else:
+            mult = 1
+
+        for k in target.temp['weights'].keys():
+            target.temp['weights'][k] = target.temp['weights'][k]*mult
+
+
+        return True
+
+class PTE_Rebalance(Algo):
+    """
+    Triggers a rebalance when PTE from static weights is past a level.
+
+    Args:
+        * PTE_volatility_cap: annualized volatility to target
+        * target_weights: dataframe of weights that needs to have the same index as the price dataframe
+        * lookback (DateOffset): lookback period for estimating volatility
+        * lag (DateOffset): amount of time to wait to calculate the covariance
+        * covar_method: method of calculating volatility
+        * annualization_factor: number of periods to annualize by.
+            It is assumed that target volatility is already annualized by this factor.
+
+    """
+
+    def __init__(
+            self,
+            PTE_volatility_cap,
+            target_weights,
+            lookback=pd.DateOffset(months=3),
+            lag=pd.DateOffset(days=0),
+            covar_method='standard',
+            annualization_factor=252
+    ):
+
+        super(PTE_Rebalance, self).__init__()
+        self.PTE_volatility_cap = PTE_volatility_cap
+        self.target_weights = target_weights
+        self.lookback = lookback
+        self.lag = lag
+        self.covar_method = covar_method
+        self.annualization_factor = annualization_factor
+
+    def __call__(self, target):
+
+        if target.now is None:
+            return False
+
+        if target.positions.shape == (0, 0):
+            return True
+
+        positions = target.positions.loc[target.now]
+        if positions is None:
+            return True
+        prices = target.universe.loc[target.now, positions.index]
+        if prices is None:
+            return True
+
+        current_weights = positions*prices/target.value
+
+        target_weights = self.target_weights.loc[target.now,:]
+
+        cols = list(current_weights.index.copy())
+        for c in target_weights.keys():
+            if not c in cols:
+                cols.append(c)
+
+        weights = pd.Series(
+            np.zeros(len(cols)),
+            index=cols
+        )
+        for c in cols:
+            if c in current_weights:
+                weights[c] = current_weights[c]
+            if c in target_weights:
+                weights[c] -= target_weights[c]
+
+
+        t0 = target.now - self.lag
+        prc = target.universe.loc[t0 - self.lookback:t0, cols]
+        returns = bt.ffn.to_returns(prc)
+
+        # calc covariance matrix
+        if self.covar_method == 'ledoit-wolf':
+            covar = sklearn.covariance.ledoit_wolf(returns)
+        elif self.covar_method == 'standard':
+            covar = returns.cov()
+        else:
+            raise NotImplementedError('covar_method not implemented')
+
+        PTE_vol = np.sqrt(np.matmul(weights.values.T, np.matmul(covar, weights.values)) * self.annualization_factor)
+
+        if pd.isnull(PTE_vol):
+            return False
+        # vol is too high
+        if PTE_vol > self.PTE_volatility_cap:
+            return True
+        else:
+            return False
 
         return True
 
@@ -1183,7 +1426,7 @@ class CloseDead(Algo):
 
         targets = target.temp['weights']
         for c in target.children:
-            if target.universe[c].ix[target.now] <= 0:
+            if target.universe[c].loc[target.now] <= 0:
                 target.close(c)
                 if c in targets:
                     del targets[c]
@@ -1202,6 +1445,12 @@ class Rebalance(Algo):
 
     Requires:
         * weights
+        * cash (optional): You can set a 'cash' value on temp. This should be a
+            number between 0-1 and determines the amount of cash to set aside.
+            For example, if cash=0.3, the strategy will allocate 70% of its
+            value to the provided weights, and the remaining 30% will be kept
+            in cash. If this value is not provided (default), the full value
+            of the strategy is allocated to securities.
 
     """
 
@@ -1214,14 +1463,29 @@ class Rebalance(Algo):
 
         targets = target.temp['weights']
 
-        # de-allocate children that are not in targets
-        not_in = [x for x in target.children if x not in targets]
-        for c in not_in:
-            target.close(c)
+        # de-allocate children that are not in targets and have non-zero value
+        # (open positions)
+        for cname in target.children:
+            # if this child is in our targets, we don't want to close it out
+            if cname in targets:
+                continue
+
+            # get child and value
+            c = target.children[cname]
+            v = c.value
+            # if non-zero and non-null, we need to close it out
+            if v != 0. and not np.isnan(v):
+                target.close(cname)
 
         # save value because it will change after each call to allocate
         # use it as base in rebalance calls
         base = target.value
+
+        # If cash is set (it should be a value between 0-1 representing the
+        # proportion of cash to keep), calculate the new 'base'
+        if 'cash' in target.temp:
+            base = base * (1 - target.temp['cash'])
+
         for item in iteritems(targets):
             target.rebalance(item[1], child=item[0], base=base)
 
@@ -1340,3 +1604,37 @@ class Require(Algo):
             return self.if_none
 
         return self.pred(item)
+
+
+class Or(Algo):
+    """
+    Flow control Algo
+
+    It useful for combining multiple signals into one signal.
+    For example, we might want two different rebalance signals to work together:
+
+        runOnDateAlgo = bt.algos.RunOnDate(pdf.index[0]) # where pdf.index[0] is the first date in our time series
+        runMonthlyAlgo = bt.algos.RunMonthly()
+        orAlgo = Or([runMonthlyAlgo,runOnDateAlgo])
+
+    orAlgo will return True if it is the first date or if it is 1st of the month
+
+    Args:
+        * list_of_algos: Iterable list of algos.
+            Runs each algo and
+            returns true if any algo returns true.
+    """
+
+    def __init__(self, list_of_algos):
+        super(Or, self).__init__()
+        self._list_of_algos = list_of_algos
+        return
+
+    def __call__(self, target):
+        res = False
+        for algo in self._list_of_algos:
+            tempRes = algo(target)
+            res = res | tempRes
+
+        return res
+

@@ -1,7 +1,13 @@
 from __future__ import division
 from datetime import datetime
 
-import mock
+import sys
+if sys.version_info < (3, 3):
+    import mock
+else:
+    from unittest import mock
+
+
 import pandas as pd
 import numpy as np
 from nose.tools import assert_almost_equal as aae
@@ -53,79 +59,301 @@ def test_run_once():
     assert not algo(None)
 
 
-def test_run_weekly():
-    algo = algos.RunWeekly()
-
+def test_run_period():
     target = mock.MagicMock()
+
+    dts = pd.date_range('2010-01-01', periods=35)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+
+    algo = algos.RunPeriod()
+
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+    dts = target.data.index
 
     target.now = None
     assert not algo(target)
 
-    target.now = datetime(2010, 1, 1)
+    # run on first date
+    target.now = dts[0]
     assert not algo(target)
 
-    target.now = datetime(2010, 1, 15)
+    # run on first supplied date
+    target.now = dts[1]
     assert algo(target)
 
-    target.now = datetime(2010, 2, 15)
-    assert algo(target)
-
-    # sat
-    target.now = datetime(2014, 1, 4)
-    assert algo(target)
-
-    # sun
-    target.now = datetime(2014, 1, 5)
+    # run on last date
+    target.now = dts[len(dts) - 1]
     assert not algo(target)
 
-    # mon - week change
-    target.now = datetime(2014, 1, 6)
+    algo = algos.RunPeriod(
+        run_on_first_date=False,
+        run_on_end_of_period=True,
+        run_on_last_date=True
+    )
+
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+    dts = target.data.index
+
+    # run on first date
+    target.now = dts[0]
+    assert not algo(target)
+
+    # first supplied date
+    target.now = dts[1]
+    assert not algo(target)
+
+    # run on last date
+    target.now = dts[len(dts) - 1]
+    assert algo(target)
+
+    # date not in index
+    target.now = datetime(2009, 2, 15)
+    assert not algo(target)
+
+
+def test_run_daily():
+    target = mock.MagicMock()
+
+    dts = pd.date_range('2010-01-01', periods=35)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+
+    algo = algos.RunDaily()
+
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('',[algo]),
+        data
+    )
+    target.data = backtest.data
+
+    target.now = dts[1]
+    assert algo(target)
+
+
+
+def test_run_weekly():
+    dts = pd.date_range('2010-01-01', periods=367)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+
+    target = mock.MagicMock()
+    target.data = data
+
+    algo = algos.RunWeekly()
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # end of week
+    target.now = dts[2]
+    assert not algo(target)
+
+    # new week
+    target.now = dts[3]
+    assert algo(target)
+
+    algo = algos.RunWeekly(
+        run_on_first_date=False,
+        run_on_end_of_period=True,
+        run_on_last_date=True
+    )
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # end of week
+    target.now = dts[2]
+    assert algo(target)
+
+    # new week
+    target.now = dts[3]
+    assert not algo(target)
+
+    dts = pd.DatetimeIndex([datetime(2016, 1, 3), datetime(2017, 1, 8),datetime(2018, 1, 7)])
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # check next year
+    target.now = dts[1]
     assert algo(target)
 
 
 def test_run_monthly():
-    algo = algos.RunMonthly()
+    dts = pd.date_range('2010-01-01', periods=367)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
 
     target = mock.MagicMock()
+    target.data = data
 
-    target.now = None
+    algo = algos.RunMonthly()
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # end of month
+    target.now = dts[30]
     assert not algo(target)
 
-    target.now = datetime(2010, 1, 1)
-    assert not algo(target)
-
-    target.now = datetime(2010, 1, 15)
-    assert not algo(target)
-
-    target.now = datetime(2010, 2, 15)
+    # new month
+    target.now = dts[31]
     assert algo(target)
 
-    target.now = datetime(2010, 2, 25)
-    assert not algo(target)
+    algo = algos.RunMonthly(
+        run_on_first_date=False,
+        run_on_end_of_period=True,
+        run_on_last_date=True
+    )
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
 
-    target.now = datetime(2010, 12, 25)
+    # end of month
+    target.now = dts[30]
     assert algo(target)
 
-    target.now = datetime(2011, 1, 25)
+    # new month
+    target.now = dts[31]
+    assert not algo(target)
+
+    dts = pd.DatetimeIndex([datetime(2016, 1, 3), datetime(2017, 1, 8), datetime(2018, 1, 7)])
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # check next year
+    target.now = dts[1]
+    assert algo(target)
+
+
+def test_run_quarterly():
+    dts = pd.date_range('2010-01-01', periods=367)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+
+    target = mock.MagicMock()
+    target.data = data
+
+    algo = algos.RunQuarterly()
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # end of quarter
+    target.now = dts[89]
+    assert not algo(target)
+
+    # new quarter
+    target.now = dts[90]
+    assert algo(target)
+
+    algo = algos.RunQuarterly(
+        run_on_first_date=False,
+        run_on_end_of_period=True,
+        run_on_last_date=True
+    )
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # end of quarter
+    target.now = dts[89]
+    assert algo(target)
+
+    # new quarter
+    target.now = dts[90]
+    assert not algo(target)
+
+    dts = pd.DatetimeIndex([datetime(2016, 1, 3), datetime(2017, 1, 8), datetime(2018, 1, 7)])
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # check next year
+    target.now = dts[1]
     assert algo(target)
 
 
 def test_run_yearly():
-    algo = algos.RunYearly()
+    dts = pd.date_range('2010-01-01', periods=367)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
 
     target = mock.MagicMock()
+    target.data = data
 
-    target.now = datetime(2010, 1, 1)
-    actual = algo(target)
-    assert not actual
+    algo = algos.RunYearly()
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
 
-    target.now = datetime(2010, 5, 1)
-    actual = algo(target)
-    assert not actual
+    # end of year
+    target.now = dts[364]
+    assert not algo(target)
 
-    target.now = datetime(2011, 1, 1)
-    actual = algo(target)
-    assert actual
+    # new year
+    target.now = dts[365]
+    assert algo(target)
+
+    algo = algos.RunYearly(
+        run_on_first_date=False,
+        run_on_end_of_period=True,
+        run_on_last_date=True
+    )
+    # adds the initial day
+    backtest = bt.Backtest(
+        bt.Strategy('', [algo]),
+        data
+    )
+    target.data = backtest.data
+
+    # end of year
+    target.now = dts[364]
+    assert algo(target)
+
+    # new year
+    target.now = dts[365]
+    assert not algo(target)
 
 
 def test_run_on_date():
@@ -159,12 +387,51 @@ def test_rebalance():
     s.temp['weights'] = {'c1': 1}
 
     assert algo(s)
-    assert s.value == 999
-    assert s.capital == -1
+    assert s.value == 1000
+    assert s.capital == 0
     c1 = s['c1']
     assert c1.value == 1000
     assert c1.position == 10
-    assert c1.weight == 1000.0 / 999
+    assert c1.weight == 1.
+
+    s.temp['weights'] = {'c2': 1}
+
+    assert algo(s)
+    assert s.value == 1000
+    assert s.capital == 0
+    c2 = s['c2']
+    assert c1.value == 0
+    assert c1.position == 0
+    assert c1.weight == 0
+    assert c2.value == 1000
+    assert c2.position == 10
+    assert c2.weight == 1.
+
+
+def test_rebalance_with_commissions():
+    algo = algos.Rebalance()
+
+    s = bt.Strategy('s')
+    s.set_commissions(lambda q, p: 1)
+
+    dts = pd.date_range('2010-01-01', periods=3)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+    data['c1'][dts[1]] = 105
+    data['c2'][dts[1]] = 95
+
+    s.setup(data)
+    s.adjust(1000)
+    s.update(dts[0])
+
+    s.temp['weights'] = {'c1': 1}
+
+    assert algo(s)
+    assert s.value == 999
+    assert s.capital == 99
+    c1 = s['c1']
+    assert c1.value == 900
+    assert c1.position == 9
+    assert c1.weight == 900 / 999.
 
     s.temp['weights'] = {'c2': 1}
 
@@ -177,7 +444,50 @@ def test_rebalance():
     assert c1.weight == 0
     assert c2.value == 900
     assert c2.position == 9
-    assert c2.weight == 900.0 / 997
+    assert c2.weight == 900. / 997
+
+
+def test_rebalance_with_cash():
+    algo = algos.Rebalance()
+
+    s = bt.Strategy('s')
+    s.set_commissions(lambda q, p: 1)
+
+    dts = pd.date_range('2010-01-01', periods=3)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100)
+    data['c1'][dts[1]] = 105
+    data['c2'][dts[1]] = 95
+
+    s.setup(data)
+    s.adjust(1000)
+    s.update(dts[0])
+
+    s.temp['weights'] = {'c1': 1}
+    # set cash amount
+    s.temp['cash'] = 0.5
+
+    assert algo(s)
+    assert s.value == 999
+    assert s.capital == 599
+    c1 = s['c1']
+    assert c1.value == 400
+    assert c1.position == 4
+    assert c1.weight == 400.0 / 999
+
+    s.temp['weights'] = {'c2': 1}
+    # change cash amount
+    s.temp['cash'] = 0.25
+
+    assert algo(s)
+    assert s.value == 997
+    assert s.capital == 297
+    c2 = s['c2']
+    assert c1.value == 0
+    assert c1.position == 0
+    assert c1.weight == 0
+    assert c2.value == 700
+    assert c2.position == 7
+    assert c2.weight == 700.0 / 997
 
 
 def test_select_all():
@@ -267,7 +577,7 @@ def test_select_has_data():
 
     s = bt.Strategy('s')
 
-    dts = pd.date_range('2010-01-01', periods=3)
+    dts = pd.date_range('2010-01-01', periods=10)
     data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100.)
     data['c1'].ix[dts[0]] = np.nan
     data['c1'].ix[dts[1]] = np.nan
@@ -298,6 +608,34 @@ def test_select_has_data_preselected():
     assert algo(s)
     selected = s.temp['selected']
     assert len(selected) == 0
+
+
+@mock.patch('bt.ffn.calc_erc_weights')
+def test_weigh_erc(mock_erc):
+    algo = algos.WeighERC(lookback=pd.DateOffset(days=5))
+
+    mock_erc.return_value = pd.Series({'c1': 0.3, 'c2': 0.7})
+
+    s = bt.Strategy('s')
+
+    dts = pd.date_range('2010-01-01', periods=5)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100.)
+
+    s.setup(data)
+    s.update(dts[4])
+    s.temp['selected'] = ['c1', 'c2']
+
+    assert algo(s)
+    assert mock_erc.called
+    rets = mock_erc.call_args[0][0]
+    assert len(rets) == 4
+    assert 'c1' in rets
+    assert 'c2' in rets
+
+    weights = s.temp['weights']
+    assert len(weights) == 2
+    assert weights['c1'] == 0.3
+    assert weights['c2'] == 0.7
 
 
 def test_weigh_inv_vol():
@@ -647,3 +985,150 @@ def test_run_every_n_periods_offset():
 
     target.now = pd.to_datetime('2010-01-05')
     assert algo(target)
+
+
+def test_or():
+    target = mock.MagicMock()
+    target.temp = {}
+
+    #run on the 1/2/18
+    runOnDateAlgo = algos.RunOnDate(pd.to_datetime('2018-01-02'))
+    runOnDateAlgo2 = algos.RunOnDate(pd.to_datetime('2018-01-03'))
+    runOnDateAlgo3 = algos.RunOnDate(pd.to_datetime('2018-01-04'))
+    runOnDateAlgo4 = algos.RunOnDate(pd.to_datetime('2018-01-04'))
+
+    orAlgo = algos.Or([runOnDateAlgo, runOnDateAlgo2, runOnDateAlgo3, runOnDateAlgo4])
+
+    #verify it returns false when neither is true
+    target.now = pd.to_datetime('2018-01-01')
+    assert not orAlgo(target)
+
+    # verify it returns true when the first is true
+    target.now = pd.to_datetime('2018-01-02')
+    assert orAlgo(target)
+
+    # verify it returns true when the second is true
+    target.now = pd.to_datetime('2018-01-03')
+    assert orAlgo(target)
+
+    # verify it returns true when both algos return true
+    target.now = pd.to_datetime('2018-01-04')
+    assert orAlgo(target)
+
+def test_TargetVol():
+
+    s = bt.Strategy('s')
+
+    dts = pd.date_range('2010-01-01', periods=7)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100.)
+
+    # high vol c1
+    data.loc[dts[0],'c1'] = 95
+    data.loc[dts[1],'c1'] = 105
+    data.loc[dts[2],'c1'] = 95
+    data.loc[dts[3],'c1'] = 105
+    data.loc[dts[4],'c1'] = 95
+    data.loc[dts[5],'c1'] = 105
+    data.loc[dts[6],'c1'] = 95
+
+    # low vol c2
+    data.loc[dts[0], 'c2'] = 99
+    data.loc[dts[1], 'c2'] = 101
+    data.loc[dts[2], 'c2'] = 99
+    data.loc[dts[3], 'c2'] = 101
+    data.loc[dts[4], 'c2'] = 99
+    data.loc[dts[5], 'c2'] = 101
+    data.loc[dts[6], 'c2'] = 99
+
+    targetVolAlgo = algos.TargetVol(
+        0.1,
+        lookback=pd.DateOffset(days=5),
+        lag=pd.DateOffset(days=1),
+        covar_method='standard',
+        annualization_factor=1
+    )
+
+    s.setup(data)
+    s.update(dts[6])
+    s.temp['weights'] = {'c1':0.5, 'c2':0.5}
+
+    assert targetVolAlgo(s)
+    weights = s.temp['weights']
+    assert len(weights) == 2
+    assert np.isclose(weights['c2'],weights['c1'])
+
+    unannualized_c2_weight = weights['c1']
+
+    targetVolAlgo = algos.TargetVol(
+        0.1*np.sqrt(252),
+        lookback=pd.DateOffset(days=5),
+        lag=pd.DateOffset(days=1),
+        covar_method='standard',
+        annualization_factor=252
+    )
+
+    s.setup(data)
+    s.update(dts[6])
+    s.temp['weights'] = {'c1': 0.5, 'c2': 0.5}
+
+    assert targetVolAlgo(s)
+    weights = s.temp['weights']
+    assert len(weights) == 2
+    assert np.isclose(weights['c2'], weights['c1'])
+
+    assert np.isclose(unannualized_c2_weight, weights['c2'])
+
+
+def test_PTE_Rebalance():
+
+    s = bt.Strategy('s')
+
+    dts = pd.date_range('2010-01-01', periods=30*4)
+    data = pd.DataFrame(index=dts, columns=['c1', 'c2'], data=100.)
+
+    # high vol c1
+    # low vol c2
+    for i,dt in enumerate(dts[:-2]):
+        if i % 2 == 0:
+            data.loc[dt,'c1'] = 95
+            data.loc[dt,'c2'] = 101
+        else:
+            data.loc[dt, 'c1'] = 105
+            data.loc[dt, 'c2'] = 99
+
+    dt = dts[-2]
+    data.loc[dt,'c1'] = 115
+    data.loc[dt,'c2'] = 97
+
+    s.setup(data)
+    s.update(dts[-2])
+    s.adjust(1000000)
+    s.rebalance(0.4,'c1')
+    s.rebalance(0.6,'c2')
+
+    wdf = pd.DataFrame(
+        np.zeros(data.shape),
+        columns=data.columns,
+        index=data.index
+    )
+
+    wdf['c1'] = 0.5
+    wdf['c2'] = 0.5
+
+
+    PTE_rebalance_Algo = bt.algos.PTE_Rebalance(
+        0.01,
+        wdf,
+        lookback=pd.DateOffset(months=3),
+        lag=pd.DateOffset(days=1),
+        covar_method='standard',
+        annualization_factor=252
+    )
+
+    assert PTE_rebalance_Algo(s)
+
+    s.rebalance(0.5, 'c1')
+    s.rebalance(0.5, 'c2')
+
+    assert not PTE_rebalance_Algo(s)
+
